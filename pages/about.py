@@ -2,6 +2,21 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+import io
+import numpy as np
+from sklearn.model_selection import StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
+from sklearn.naive_bayes import GaussianNB
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
+import time
+from functools import wraps
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import cross_validate
 
 def main():
     st.title("About the Data 💾")
@@ -21,6 +36,115 @@ def main():
     DATA_URL_2 = ('data/alzheimers_encoded.csv')
     alzheimers = pd.read_csv(DATA_URL_1)
     alzheimers_encoded = pd.read_csv(DATA_URL_2)
+
+    feature_names = alzheimers_encoded.columns
+    numerical_data = alzheimers_encoded.drop(columns=["Alzheimers_Diagnosis_Yes"])
+    target = alzheimers_encoded['Alzheimers_Diagnosis_Yes']
+
+    def time_it():
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            result = func(*args, **kwargs)
+            end = time.perf_counter()
+            print(f"[TIMER] {func.__name__} took {end - start:.4f} seconds")
+            return result
+        return wrapper
+    return decorator
+
+    @time_it()
+    def evaluate_model(estimator, X, y, cv):
+        scoring = ["accuracy", "precision_macro", "recall_macro", "f1_macro"]
+        cv_results = cross_validate(estimator, X, y, scoring=scoring, cv=cv, n_jobs=-1)
+    
+        metrics = {
+            "accuracy": np.mean(cv_results["test_accuracy"]),
+            "precision": np.mean(cv_results["test_precision_macro"]),
+            "recall": np.mean(cv_results["test_recall_macro"]),
+            "f1": np.mean(cv_results["test_f1_macro"]),
+        }
+        return metrics
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=1337)
+    
+    estimators = {
+        "LogisticRegression": LogisticRegression(),
+        "RandomForest": RandomForestClassifier(),
+        "XGBoost": xgb.XGBClassifier(eval_metric="logloss"),
+        "NaiveBayes": GaussianNB(),
+        "LDA": LinearDiscriminantAnalysis(),
+        "QDA": QuadraticDiscriminantAnalysis(),
+        "KNN": KNeighborsClassifier(),
+        "SVM": LinearSVC(C=1.0)
+    }
+    
+    results = {}
+
+    for name, model in estimators.items():
+        print(f"Running {name} evaluation:")
+        metrics = evaluate_model(model, numerical_data, target, skf)
+        results[name] = metrics
+    
+    for name, metrics_dict in results.items():
+        print(f"\n{name} Metrics:")
+        for metric_name, metric_val in metrics_dict.items():
+            print(f"\t{metric_name}: {metric_val:.4f}")
+
+    def get_feature_importances(model, feature_names):
+        # Tree based models usually have a feature_importances_ attribute
+        if hasattr(model, "feature_importances_"):
+            importances = model.feature_importances_
+            return list(zip(feature_names, importances))
+    
+        # Linear models usually have a coef_ attribute
+        elif hasattr(model, "coef_"):
+            coef = model.coef_
+            importances = np.abs(coef[0])
+    
+            return list(zip(feature_names, importances))
+        else:
+            return None
+    
+    
+    def run_feature_importance_analysis(num_importances=5):
+        fitted_models = {}
+        for name, model in estimators.items():
+            print(f"Fitting {name} ...")
+            model.fit(numerical_data, target)
+            fitted_models[name] = model
+    
+        for name, model in fitted_models.items():
+            importances = get_feature_importances(model, feature_names)
+            if importances is not None:
+                print(f"\n{name} feature importances:")
+                for feat, val in sorted(importances, key=lambda x: x[1], reverse=True)[:5]:
+                    print(f"\t{feat}: {val:.4f}")
+            else:
+                print(f"\n{name} does not provide a direct feature importance measure.")
+
+    def plot_feature_importance(model_name, num_importances = 5):
+          if model_name in estimators.keys():
+              print(f"Fitting {model_name} ...")
+              model = estimators[model_name]        
+              model.fit(numerical_data, target)
+              print("Finished fitting")
+              importances = get_feature_importances(model, numerical_data.columns)
+              sorted_importances = sorted(importances, key=lambda x: x[1], reverse=True)
+              top_importances = sorted_importances[:num_importances]
+              # Separate names and values for plotting
+              labels = [t[0] for t in top_importances]
+              values = [t[1] for t in top_importances]
+              
+              # Create a bar plot
+              plt.figure(figsize=(8, 5))
+              plt.barh(range(len(values)), values)
+              plt.yticks(range(len(values)), labels)
+              plt.title(f"Feature Importances ({model_name})")
+              plt.xlabel("importance")
+              plt.ylabel("Feature")
+              plt.show()
+    
 
     tab1, tab2, tab3, tab4 = st.tabs(["Original Data Set", "Preprocessing", "Analysis", "Feature Selection"])
 
@@ -87,8 +211,12 @@ def main():
         st.write("# Summary Statistics:")
         st.write("We first want to understand the structure of the dataset, including the size of the dataset, qualitative and quantitative features.")
 
-        alzheimers.info()
-        alzheimers.describe().style.set_caption("Numerical Columns")
+        buffer = io.StringIO()
+        alzheimers.info(buf=buffer)
+        st.text(buffer.getvalue())
+
+        st.dataframe(alzheimers.describe())
+
         alzheimers.select_dtypes(include="object").describe().style.set_caption("Categorical Columns")
 
         st.write(
@@ -114,12 +242,11 @@ def main():
       
         st.write("# Linear correlation analysis:")
       
-        sns.heatmap(alzheimers.select_dtypes(include='number').corr().iloc[::-1], vmin=-1, vmax=1, cmap='coolwarm', annot=True, square=True)
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(alzheimers.select_dtypes(include='number').corr(), ax=ax, vmin=-1, vmax=1, cmap='coolwarm', annot=True, square=True)
+        plt.xticks(rotation=45)
         plt.yticks(rotation=0)
-        plt.xticks(rotation=0)
-        plt.title("Linear correlations of numerical features")
-        plt.tight_layout()
-        plt.show()
+        st.pyplot(fig)
 
         st.write(
             """
@@ -148,37 +275,6 @@ def main():
             """
         )
 
-        def get_feature_importances(model, feature_names):
-            # Tree based models usually have a feature_importances_ attribute
-            if hasattr(model, "feature_importances_"):
-                importances = model.feature_importances_
-                return list(zip(feature_names, importances))
-        
-            # Linear models usually have a coef_ attribute
-            elif hasattr(model, "coef_"):
-                coef = model.coef_
-                importances = np.abs(coef[0])
-        
-                return list(zip(feature_names, importances))
-            else:
-                return None
-        
-        def run_feature_importance_analysis(num_importances=5):
-            fitted_models = {}
-            for name, model in estimators.items():
-                print(f"Fitting {name} ...")
-                model.fit(numerical_data, target)
-                fitted_models[name] = model
-        
-            for name, model in fitted_models.items():
-                importances = get_feature_importances(model, feature_names)
-                if importances is not None:
-                    print(f"\n{name} feature importances:")
-                    for feat, val in sorted(importances, key=lambda x: x[1], reverse=True)[:5]:
-                        print(f"\t{feat}: {val:.4f}")
-                else:
-                    print(f"\n{name} does not provide a direct feature importance measure.")
-        
         run_feature_importance_analysis()
 
         st.write(
@@ -186,30 +282,8 @@ def main():
               Find the top 5 most important features through visualization：
             """
         )
-
-      def plot_feature_importance(model_name, num_importances = 5):
-          if model_name in estimators.keys():
-              print(f"Fitting {model_name} ...")
-              model = estimators[model_name]        
-              model.fit(numerical_data, target)
-              print("Finished fitting")
-              importances = get_feature_importances(model, numerical_data.columns)
-              sorted_importances = sorted(importances, key=lambda x: x[1], reverse=True)
-              top_importances = sorted_importances[:num_importances]
-              # Separate names and values for plotting
-              labels = [t[0] for t in top_importances]
-              values = [t[1] for t in top_importances]
-              
-              # Create a bar plot
-              plt.figure(figsize=(8, 5))
-              plt.barh(range(len(values)), values)
-              plt.yticks(range(len(values)), labels)
-              plt.title(f"Feature Importances ({model_name})")
-              plt.xlabel("importance")
-              plt.ylabel("Feature")
-              plt.show()
       
-      plot_feature_importance("RandomForest")
+        plot_feature_importance("RandomForest")
         
 if __name__ == "__main__":
     main()
