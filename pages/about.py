@@ -239,7 +239,7 @@ def main():
             """
         )
       
-  with tab4:
+    with tab4:
         st.subheader("Feature Selection")
 
         st.write("Analysis based on the encoded dataset:")
